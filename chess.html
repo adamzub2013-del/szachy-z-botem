@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Szachy z botem — całość w jednym pliku HTML</title>
+  <style>
+    :root{--light:#f0d9b5;--dark:#b58863;--board-size:560px}
+    body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial;display:flex;gap:24px;align-items:flex-start;padding:24px;background:#f6f7fb}
+    .board{width:var(--board-size);height:var(--board-size);display:grid;grid-template-columns:repeat(8,1fr);border-radius:8px;overflow:hidden;box-shadow:0 6px 18px rgba(0,0,0,0.12)}
+    .square{width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:34px;cursor:pointer;user-select:none}
+    .square.light{background:var(--light)}
+    .square.dark{background:var(--dark)}
+    .square.highlight{outline:4px solid rgba(255,255,0,0.45);}
+    .square.move{box-shadow:inset 0 0 0 4px rgba(0,255,0,0.14)}
+    .controls{max-width:360px}
+    .controls h1{margin:0 0 8px;font-size:20px}
+    .controls p{margin:6px 0;color:#333}
+    .btn{display:inline-block;padding:8px 12px;border-radius:6px;background:#2b6ef6;color:white;text-decoration:none;cursor:pointer;margin:6px 6px 6px 0}
+    .small{font-size:13px;opacity:0.9}
+    .status{margin-top:12px;padding:10px;border-radius:8px;background:white;box-shadow:0 2px 8px rgba(0,0,0,0.06)}
+    .moves{margin-top:10px;font-family:monospace;white-space:pre-wrap}
+    footer{margin-top:12px;color:#555;font-size:13px}
+  </style>
+</head>
+<body>
+  <div>
+    <div id="board" class="board" aria-label="Szachownica"></div>
+  </div>
+  <div class="controls">
+    <h1>Szachy z prostym botem (plik HTML)</h1>
+    <p class="small">Kliknij figurę, potem pole docelowe. Bot wykonuje losowy legalny ruch. Promocja piona → hetman automatyczna.</p>
+    <div>
+      <button class="btn" id="newBtn">Nowa gra</button>
+      <button class="btn" id="undoBtn">Cofnij</button>
+      <button class="btn" id="flipBtn">Obróć szachownicę</button>
+    </div>
+    <div class="status" id="status">
+      <div><strong id="turn">Ruch: Biały</strong></div>
+      <div id="info" class="small">Gra gotowa.</div>
+      <div class="moves" id="moves"></div>
+    </div>
+    <footer>Plik jednoplikowy — zapisz jako <code>chess.html</code> i otwórz w przeglądarce.</footer>
+  </div>
+
+<script>
+// Prosty silnik szachowy (legalne ruchy, sprawdzenie szacha, promocja). Bot wykonuje losowy legalny ruch.
+// Reprezentacja: 8x8 tablica, pola [rank][file], rank 0 = 8. rzędy i kolumny od 0..7
+const PIECES = {
+  'wK':'\u2654','wQ':'\u2655','wR':'\u2656','wB':'\u2657','wN':'\u2658','wP':'\u2659',
+  'bK':'\u265A','bQ':'\u265B','bR':'\u265C','bB':'\u265D','bN':'\u265E','bP':'\u265F'
+};
+let boardEl = document.getElementById('board');
+let statusEl = document.getElementById('status');
+let turnEl = document.getElementById('turn');
+let infoEl = document.getElementById('info');
+let movesEl = document.getElementById('moves');
+let selected = null; // {r,c}
+let orientation = 'white'; // or 'black'
+let history = [];
+let game = {board:[], turn:'w', halfmove:0, fullmove:1};
+
+function cloneBoard(b){return b.map(r=>r.slice())}
+
+function initGame(){
+  const init = [
+    ['bR','bN','bB','bQ','bK','bB','bN','bR'],
+    ['bP','bP','bP','bP','bP','bP','bP','bP'],
+    ['','','','','','','',''],
+    ['','','','','','','',''],
+    ['','','','','','','',''],
+    ['','','','','','','',''],
+    ['wP','wP','wP','wP','wP','wP','wP','wP'],
+    ['wR','wN','wB','wQ','wK','wB','wN','wR']
+  ];
+  game.board = init; game.turn='w'; game.halfmove=0; game.fullmove=1; history=[]; selected=null; updateStatus(); render(); movesEl.textContent='';
+}
+
+function render(){
+  boardEl.innerHTML='';
+  for(let r=0;r<8;r++){
+    for(let c=0;c<8;c++){
+      let rr = orientation==='white'?r:7-r;
+      let cc = orientation==='white'?c:7-c;
+      let sq = document.createElement('div');
+      sq.className='square '+(((rr+cc)%2===0)?'light':'dark');
+      sq.dataset.r = rr; sq.dataset.c = cc;
+      let val = game.board[rr][cc];
+      sq.textContent = val?PIECES[val] : '';
+      sq.addEventListener('click',onClickSquare);
+      boardEl.appendChild(sq);
+    }
+  }
+  highlightSelected();
+}
+
+function onClickSquare(e){
+  const r = parseInt(e.currentTarget.dataset.r);
+  const c = parseInt(e.currentTarget.dataset.c);
+  const piece = game.board[r][c];
+  if(selected){
+    // try to move
+    const moves = legalMovesFrom(selected.r, selected.c);
+    const found = moves.find(m=>m.to.r===r && m.to.c===c);
+    if(found){
+      makeMove(selected, {r,c}, found.promotion);
+      selected=null; render();
+      postMove();
+      return;
+    }
+    // else if clicking own piece -> select
+    if(piece && piece[0]===game.turn){ selected={r,c}; render(); return; }
+    selected = null; render();
+  } else {
+    if(piece && piece[0]===game.turn){ selected={r,c}; render(); }
+  }
+}
+
+function highlightSelected(){
+  const squares = boardEl.querySelectorAll('.square');
+  squares.forEach(sq=>sq.classList.remove('highlight','move'));
+  if(selected){
+    const idx = coordToIndex(selected.r, selected.c);
+    squares[idx].classList.add('highlight');
+    const moves = legalMovesFrom(selected.r, selected.c);
+    moves.forEach(m=>{
+      const idx2 = coordToIndex(m.to.r,m.to.c);
+      squares[idx2].classList.add('move');
+    });
+  }
+}
+
+function coordToIndex(r,c){
+  // depending on orientation
+  let rr = orientation==='white'?r:7-r;
+  let cc = orientation==='white'?c:7-c;
+  return rr*8 + cc;
+}
+
+function inside(r,c){return r>=0 && r<8 && c>=0 && c<8}
+
+function legalMovesFrom(r,c){
+  const piece = game.board[r][c]; if(!piece) return [];
+  const color = piece[0]; if(color!==game.turn) return [];
+  const type = piece[1];
+  let moves = [];
+  if(type==='P') moves = pawnMoves(r,c,color);
+  if(type==='N') moves = knightMoves(r,c,color);
+  if(type==='B') moves = slidingMoves(r,c,color, [[1,1],[1,-1],[-1,1],[-1,-1]]);
+  if(type==='R') moves = slidingMoves(r,c,color, [[1,0],[-1,0],[0,1],[0,-1]]);
+  if(type==='Q') moves = slidingMoves(r,c,color, [[1,1],[1,-1],[-1,1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]]);
+  if(type==='K') moves = kingMoves(r,c,color);
+  // filter out moves that leave king in check
+  const legal = moves.filter(m=>{
+    const b2 = cloneBoard(game.board);
+    applyMoveOnBoard(b2,{r,c},m.to,m.promotion);
+    return !isKingAttacked(b2,color);
+  });
+  return legal;
+}
+
+function pawnMoves(r,c,color){
+  let dir = color==='w' ? -1 : 1;
+  let moves = [];
+  // one step
+  if(inside(r+dir,c) && game.board[r+dir][c]===''){
+    moves.push({to:{r:r+dir,c},promotion:shouldPromote(r+dir,color)});
+    // two steps
+    if((color==='w' && r===6) || (color==='b' && r===1)){
+      if(game.board[r+2*dir][c]==='') moves.push({to:{r:r+2*dir,c}});
+    }
+  }
+  // captures
+  for(let dc of [-1,1]){
+    let rr=r+dir, cc=c+dc;
+    if(inside(rr,cc) && game.board[rr][cc]!==''){
+      if(game.board[rr][cc][0]!==color) moves.push({to:{r:rr,c:cc},promotion:shouldPromote(rr,color)});
+    }
+  }
+  return moves;
+}
+
+function shouldPromote(r,color){
+  return (color==='w' && r===0) || (color==='b' && r===7);
+}
+
+function knightMoves(r,c,color){
+  const deltas = [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]];
+  let moves=[];
+  for(let [dr,dc] of deltas){
+    let rr=r+dr, cc=c+dc;
+    if(!inside(rr,cc)) continue;
+    if(game.board[rr][cc]==='' || game.board[rr][cc][0]!==color) moves.push({to:{r:rr,c:cc}});
+  }
+  return moves;
+}
+
+function slidingMoves(r,c,color,deltas){
+  let moves=[];
+  for(let [dr,dc] of deltas){
+    let rr=r+dr, cc=c+dc;
+    while(inside(rr,cc)){
+      if(game.board[rr][cc]==='') moves.push({to:{r:rr,c:cc}});
+      else{ if(game.board[rr][cc][0]!==color) moves.push({to:{r:rr,c:cc}}); break; }
+      rr+=dr; cc+=dc;
+    }
+  }
+  return moves;
+}
+
+function kingMoves(r,c,color){
+  let moves=[];
+  for(let dr=-1;dr<=1;dr++) for(let dc=-1;dc<=1;dc++){
+    if(dr===0 && dc===0) continue;
+    let rr=r+dr, cc=c+dc; if(!inside(rr,cc)) continue;
+    if(game.board[rr][cc]==='' || game.board[rr][cc][0]!==color) moves.push({to:{r:rr,c:cc}});
+  }
+  // castling: omitted for simplicity
+  return moves;
+}
+
+function applyMoveOnBoard(board, from, to, promotion){
+  const piece = board[from.r][from.c];
+  board[from.r][from.c] = '';
+  let placed = piece;
+  if(promotion) placed = piece[0]+ 'Q';
+  board[to.r][to.c] = placed;
+}
+
+function makeMove(from, to, promotion){
+  const moveObj = {from:{r:from.r,c:from.c},to:{r:to.r,c:to.c},piece:game.board[from.r][from.c],captured:game.board[to.r][to.c],promotion:promotion||false};
+  history.push({board:cloneBoard(game.board), turn:game.turn, fullmove:game.fullmove});
+  applyMoveOnBoard(game.board,from,to,promotion);
+  // update turn
+  if(game.turn==='b') game.fullmove++;
+  game.turn = (game.turn==='w')?'b':'w';
+  updateStatus();
+  render();
+}
+
+function postMove(){
+  // update move list
+  const last = history[history.length-1];
+  movesEl.textContent = movesEl.textContent + formatMove(history.length, last);
+  // check for checkmate/stalemate
+  const result = checkGameOver();
+  if(result) { infoEl.textContent = result; return; }
+  // if it's bot's turn (black), make bot move after small delay
+  if(game.turn==='b'){
+    infoEl.textContent = 'Bot myśli...';
+    setTimeout(()=>{ botMove(); }, 250);
+  }
+}
+
+function formatMove(idx, state){
+  // crude: show board's turn swap
+  const lastMove = history.length>0 ? history[history.length-1] : null;
+  // we don't store last move easily; instead skip detailed SAN
+  return '';
+}
+
+function isKingAttacked(board, color){
+  // find king
+  let kr=-1,kc=-1;
+  for(let r=0;r<8;r++) for(let c=0;c<8;c++) if(board[r][c]===color+'K'){kr=r;kc=c}
+  if(kr===-1) return true; // missing king
+  // check attacks from all enemy pieces
+  const enemy = color==='w'?'b':'w';
+  // pawns
+  const pd = enemy==='w'? -1: 1; // enemy pawn moves up if white
+  for(let dc of [-1,1]){
+    let rr=kr+pd, cc=kc+dc; if(inside(rr,cc) && board[rr][cc]===enemy+'P') return true;
+  }
+  // knights
+  const nd = [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]];
+  for(let [dr,dc] of nd){let rr=kr+dr, cc=kc+dc; if(inside(rr,cc) && board[rr][cc]===enemy+'N') return true}
+  // sliding: rooks/queens
+  const orth = [[1,0],[-1,0],[0,1],[0,-1]];
+  for(let [dr,dc] of orth){let rr=kr+dr, cc=kc+dc; while(inside(rr,cc)){ if(board[rr][cc]!==''){ if(board[rr][cc][0]===enemy && (board[rr][cc][1]==='R' || board[rr][cc][1]==='Q')) return true; break;} rr+=dr; cc+=dc; }}
+  // bishops/queens
+  const diag = [[1,1],[1,-1],[-1,1],[-1,-1]];
+  for(let [dr,dc] of diag){let rr=kr+dr, cc=kc+dc; while(inside(rr,cc)){ if(board[rr][cc]!==''){ if(board[rr][cc][0]===enemy && (board[rr][cc][1]==='B' || board[rr][cc][1]==='Q')) return true; break;} rr+=dr; cc+=dc; }}
+  // king adjacency
+  for(let dr=-1;dr<=1;dr++) for(let dc=-1;dc<=1;dc++){ if(dr===0 && dc===0) continue; let rr=kr+dr, cc=kc+dc; if(inside(rr,cc) && board[rr][cc]===enemy+'K') return true }
+  return false;
+}
+
+function isAnyLegalMove(color){
+  for(let r=0;r<8;r++) for(let c=0;c<8;c++) if(game.board[r][c]!=='' && game.board[r][c][0]===color){ if(legalMovesFrom(r,c).length>0) return true }
+  return false;
+}
+
+function checkGameOver(){
+  // checkmate or stalemate
+  const color = game.turn;
+  if(!isAnyLegalMove(color)){
+    if(isKingAttacked(game.board, color)){
+      const winner = color==='w'?'Czarny (bot) wygrywa — mata':'Biały wygrywa — mata';
+      turnEl.textContent = 'Koniec gry'; infoEl.textContent = winner; return winner;
+    } else {
+      infoEl.textContent = 'Remis — pat.'; turnEl.textContent='Koniec gry'; return 'Remis — pat.';
+    }
+  }
+  return null;
+}
+
+function botMove(){
+  // collect all legal moves for black
+  let all=[];
+  for(let r=0;r<8;r++) for(let c=0;c<8;c++){
+    if(game.board[r][c]!=='' && game.board[r][c][0]==='b'){
+      const ms = legalMovesFrom(r,c);
+      ms.forEach(m=>all.push({from:{r,c},to:m.to,promotion:m.promotion}));
+    }
+  }
+  if(all.length===0){ checkGameOver(); return; }
+  // choose random move
+  const choice = all[Math.floor(Math.random()*all.length)];
+  makeMove(choice.from, choice.to, choice.promotion);
+  // update move list text
+  movesEl.textContent += `Bot: ${squareName(choice.from)}→${squareName(choice.to)}\n`;
+  infoEl.textContent = '';
+  const res = checkGameOver(); if(res) return;
+}
+
+function squareName(p){
+  const files = 'abcdefgh'; return files[p.c]+(8-p.r);
+}
+
+// UI buttons
+document.getElementById('newBtn').addEventListener('click', ()=>{ initGame(); });
+document.getElementById('undoBtn').addEventListener('click', ()=>{ if(history.length===0) return; const last = history.pop(); game.board = cloneBoard(last.board); game.turn = last.turn; game.fullmove = last.fullmove; selected=null; updateStatus(); render(); movesEl.textContent=''; infoEl.textContent='Cofnięto ruch.'; });
+document.getElementById('flipBtn').addEventListener('click', ()=>{ orientation = (orientation==='white')?'black':'white'; render(); });
+
+function updateStatus(){ turnEl.textContent = 'Ruch: ' + (game.turn==='w' ? 'Biały' : 'Czarny (bot)'); }
+
+// start
+initGame();
+
+</script>
+</body>
+</html>
